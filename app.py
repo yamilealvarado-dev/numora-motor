@@ -1,6 +1,7 @@
 import os
 import tempfile
 import traceback
+import requests
 from flask import Flask, request, jsonify, send_file, render_template
 from flask_cors import CORS
 from engine.aprender import aprender_perfiles, cargar_puc
@@ -29,6 +30,33 @@ def _mes_de(a):
 @app.route('/')
 def index():
     return render_template('index.html')
+
+
+@app.route('/alegra-test')
+def alegra_test():
+    """Prueba la conexión con Alegra y muestra cómo vienen los datos."""
+    from engine import alegra
+    if not alegra.hay_credenciales():
+        return jsonify({'ok': False, 'mensaje': 'Faltan ALEGRA_EMAIL o ALEGRA_TOKEN en Render.'}), 400
+    desde = request.args.get('desde')  # ej. 2026-01-01
+    hasta = request.args.get('hasta')  # ej. 2026-04-30
+    try:
+        bills = alegra.get_bills(desde, hasta, max_bills=60)
+        ejemplo_crudo = bills[0] if bills else None
+        ejemplo_convertido = alegra.bill_a_factura(bills[0]) if bills else None
+        return jsonify({'ok': True, 'conexion': 'exitosa',
+                        'facturas_de_proveedor_encontradas': len(bills),
+                        'ejemplo_convertido': ejemplo_convertido,
+                        'ejemplo_crudo': ejemplo_crudo})
+    except requests.HTTPError as e:
+        code = e.response.status_code if e.response is not None else '?'
+        msg = 'Credenciales incorrectas (401)' if code == 401 else (
+              'Tu plan de Alegra no permite API — se requiere plan Plus (403)' if code == 403 else
+              f'Error HTTP {code}')
+        return jsonify({'ok': False, 'mensaje': msg, 'detalle': str(e)}), 200
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({'ok': False, 'mensaje': 'Error de conexión', 'detalle': str(e)}), 200
 
 
 @app.route('/procesar', methods=['POST'])
