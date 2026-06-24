@@ -50,28 +50,47 @@ def _num(x):
         return 0.0
 
 
+def _tax_de(it):
+    """Extrae IVA (monto y %) de un ítem, sea tax lista, dict o nulo."""
+    iva = 0.0
+    iva_pct = 0.0
+    tax = it.get("tax")
+    if isinstance(tax, list):
+        for t in tax:
+            iva += _num(t.get("amount"))
+            if _num(t.get("percentage")):
+                iva_pct = _num(t.get("percentage"))
+    elif isinstance(tax, dict):
+        iva += _num(tax.get("amount"))
+        iva_pct = _num(tax.get("percentage"))
+    return iva, iva_pct
+
+
 def bill_a_factura(bill):
     """Convierte una factura de proveedor de Alegra al formato del motor
-    {nit, folio, prefijo, lineas:[{concepto, base, iva_pct, iva}]}."""
+    {nit, folio, prefijo, total, lineas:[{concepto, base, iva_pct, iva}]}."""
     prov = bill.get("provider") or {}
     ident = str(prov.get("identification") or "")
     nit = re.sub(r"\D", "", ident.split("-")[0])
     nt = bill.get("numberTemplate") or {}
     folio = str(nt.get("fullNumber") or nt.get("number") or bill.get("id") or "")
+
+    # El detalle puede venir en purchases.categories, en items, o en categories
+    purchases = bill.get("purchases") or {}
+    fuente = purchases.get("categories") or bill.get("items") or bill.get("categories") or []
+
     lineas = []
-    for it in bill.get("items", []) or []:
-        base = _num(it.get("total"))
+    for it in fuente:
+        base = _num(it.get("subtotal"))
+        if not base:
+            base = _num(it.get("total"))
         if not base:
             base = _num(it.get("price")) * _num(it.get("quantity") or 1)
-        iva = 0.0
-        iva_pct = 0.0
-        for t in it.get("tax", []) or []:
-            iva += _num(t.get("amount"))
-            if _num(t.get("percentage")):
-                iva_pct = _num(t.get("percentage"))
+        iva, iva_pct = _tax_de(it)
         lineas.append({"concepto": it.get("name") or it.get("description") or "",
                        "base": base, "iva_pct": iva_pct, "iva": iva})
-    return {"nit": nit, "folio": folio, "prefijo": "", "lineas": lineas}
+    return {"nit": nit, "folio": folio, "prefijo": "", "total": _num(bill.get("total")),
+            "lineas": lineas}
 
 
 def facturas_desde_alegra(fecha_desde=None, fecha_hasta=None):
