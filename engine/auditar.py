@@ -10,21 +10,45 @@ def _num(x):
 
 
 def _folio_norm(x):
-    """Normaliza folio: solo dígitos finales (quita prefijo de letras)."""
-    s = str(x or '').strip()
+    """ContaI guarda los últimos 9 caracteres y rellena con ceros adelante (ej. MTC95852 -> 0MTC95852).
+    Normaliza igual en ambos lados: últimos 9 y sin ceros de relleno."""
     import re
-    m = re.search(r'(\d+)$', s)
-    return m.group(1) if m else s
+    s = re.sub(r'\s+', '', str(x or '').strip().upper())
+    s = s[-9:] if len(s) > 9 else s
+    return s.lstrip('0')
 
 
-def auditar(ruta_auxiliar, ruta_dian, comprobante='00003'):
-    """Devuelve dict con: faltan (en DIAN, no contabilizadas), sin_dian (contabilizadas sin DIAN),
-    diferencias (valor distinto), y ok (cruzan bien)."""
+def meses_disponibles(ruta_dian):
+    """Devuelve la lista de meses (YYYY-MM) con compras recibidas en el reporte DIAN."""
+    df = pd.read_excel(ruta_dian, header=0, dtype=str)
+    rec = df[df['Grupo'].astype(str).str.contains('ecib', na=False)].copy()
+    fe = pd.to_datetime(rec['Fecha Emisión'], format='%d-%m-%Y', errors='coerce')
+    return sorted(fe.dropna().dt.strftime('%Y-%m').unique().tolist())
+
+
+def _filtrar_aux_mes(comp, mes):
+    """Filtra el auxiliar al mes (YYYY-MM) por la columna Período o por Fecha."""
+    if not mes:
+        return comp
+    yyyymm = mes.replace('-', '')
+    if 'Período' in comp.columns and comp['Período'].notna().any():
+        return comp[comp['Período'].astype(str).str.replace('-', '', regex=False) == yyyymm]
+    fe = None
+    for fmt in ('%m/%d/%Y', '%d/%m/%Y', '%Y-%m-%d'):
+        fe = pd.to_datetime(comp['Fecha'], format=fmt, errors='coerce')
+        if fe.notna().any():
+            break
+    return comp[fe.dt.strftime('%Y%m') == yyyymm]
+
+
+def auditar(ruta_auxiliar, ruta_dian, comprobante='00003', mes=None):
+    """Cruza compras contabilizadas vs DIAN. Si 'mes' (YYYY-MM), filtra ambos a ese mes."""
     # 1) Compras contabilizadas en el auxiliar
     aux = pd.read_excel(ruta_auxiliar, sheet_name='Datos', header=2, dtype=str)
     for c in ['Débitos', 'Créditos']:
         aux[c] = _num(aux[c])
     comp = aux[aux['Comprobante'] == comprobante].copy()
+    comp = _filtrar_aux_mes(comp, mes)
     comp['nit'] = comp['NIT'].apply(limpiar_nit)
 
     contab = {}  # (nit, folio) -> {total, doc}
@@ -43,7 +67,10 @@ def auditar(ruta_auxiliar, ruta_dian, comprobante='00003'):
     rec = df[df['Grupo'].astype(str).str.contains('ecib', na=False)].copy()
     rec['Total'] = _num(rec['Total'])
     rec['nit'] = rec['NIT Emisor'].apply(limpiar_nit)
-    rec['folio_n'] = rec['Folio'].apply(_folio_norm)
+    rec['folio_n'] = (rec['Prefijo'].fillna('') + rec['Folio'].fillna('')).apply(_folio_norm)
+    if mes:
+        fe = pd.to_datetime(rec['Fecha Emisión'], format='%d-%m-%Y', errors='coerce')
+        rec = rec[fe.dt.strftime('%Y-%m') == mes]
 
     dian = {}
     for _, r in rec.iterrows():

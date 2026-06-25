@@ -100,6 +100,53 @@ def get_bill(bill_id):
     return r.json()
 
 
+def probar_descarga_xml(bill_id):
+    """Intenta BAJAR el contenido del XML adjunto de una factura, por varias vías.
+    Reporta qué endpoint funciona y un pedazo del contenido."""
+    h = _headers()
+    resultados = []
+
+    # Vía 1: el detalle del bill puede traer una URL de descarga en el adjunto
+    try:
+        bill = get_bill(bill_id)
+        adj = (bill.get("attachments") or [])
+        resultados.append({"via": "bill.attachments", "adjuntos": adj})
+        for a in adj:
+            for campo in ("url", "downloadUrl", "fileUrl", "link"):
+                if a.get(campo):
+                    try:
+                        r = requests.get(a[campo], headers=h, timeout=40)
+                        resultados.append({"via": f"attachment.{campo}", "status": r.status_code,
+                                           "es_xml": "<" in r.text[:200],
+                                           "muestra": r.text[:160]})
+                    except Exception as e:
+                        resultados.append({"via": f"attachment.{campo}", "error": str(e)})
+    except Exception as e:
+        resultados.append({"via": "bill.attachments", "error": str(e)})
+
+    # Vía 2: endpoints típicos de archivos en Alegra
+    adj_id = None
+    try:
+        adj_id = (get_bill(bill_id).get("attachments") or [{}])[0].get("id")
+    except Exception:
+        pass
+    rutas = [f"/files/{adj_id}", f"/bills/{bill_id}/attachments",
+             f"/bills/{bill_id}/attachments/{adj_id}", f"/attachments/{adj_id}"]
+    for ruta in rutas:
+        if adj_id is None and "{adj" in ruta:
+            continue
+        try:
+            r = requests.get(BASE + ruta, headers=h, timeout=40)
+            muestra = r.text[:160]
+            resultados.append({"via": "GET " + ruta, "status": r.status_code,
+                               "es_xml": r.text.strip().startswith("<") or "<?xml" in r.text[:200],
+                               "muestra": muestra})
+        except Exception as e:
+            resultados.append({"via": "GET " + ruta, "error": str(e)})
+
+    return {"ok": True, "bill_id": bill_id, "adjunto_id": adj_id, "intentos": resultados}
+
+
 def diagnostico(desde=None, hasta=None):
     """Revisa si los XML adjuntos se pueden descargar por la API."""
     bills = get_bills(desde, hasta, max_bills=60)

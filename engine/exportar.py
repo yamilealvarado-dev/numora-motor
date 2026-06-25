@@ -128,3 +128,67 @@ def generar_txt(asientos, ruta_salida, nro_registro='00003'):
     with open(ruta_salida, 'w', encoding='latin-1') as f:
         f.write('\n'.join(lineas))
     return ruta_salida
+
+
+def generar_excel_contaexport(asientos, nom_cuenta, ruta_salida, hoja='Compras'):
+    """Excel en formato ContaExport para importar a ContaI:
+    columnas Asiento, Fecha, Tercero, Identificación, Documento, Código, CuentaContable,
+    Débito, Crédito, Estado. Encabezados en fila 1, datos desde fila 2."""
+    wb = Workbook()
+    ws = wb.active
+    ws.title = hoja
+    thin = Side(style='thin', color='D9DEDE')
+    bd = Border(left=thin, right=thin, top=thin, bottom=thin)
+    cols = ['Asiento', 'Fecha', 'Tercero', 'Identificación', 'Documento', 'Código',
+            'CuentaContable', 'Débito', 'Crédito', 'Estado']
+    for j, c in enumerate(cols, 1):
+        cell = ws.cell(1, j, c)
+        cell.font = Font(name='Arial', bold=True, size=9, color='FFFFFF')
+        cell.fill = PatternFill('solid', fgColor=PETRO)
+        cell.alignment = Alignment(horizontal='center', vertical='center')
+        cell.border = bd
+    ws.row_dimensions[1].height = 18
+
+    r = 2
+    for idx, a in enumerate(asientos, 1):
+        nombre = str(a['proveedor']).upper()
+        # débitos
+        for l in a['lineas']:
+            if not l['cuenta']:
+                continue
+            cta = str(l['cuenta'])
+            ident = '' if cta.startswith('11') else str(a['nit'])
+            _fila_ce(ws, r, bd, idx, a['fecha'], nombre, ident, a['factura'], cta,
+                     nom_cuenta.get(cta, ''), l['debito'], 0)
+            r += 1
+        # crédito al proveedor
+        cta = str(a['prov_cuenta'])
+        ident = '' if cta.startswith('11') else str(a['nit'])
+        _fila_ce(ws, r, bd, idx, a['fecha'], nombre, ident, a['factura'], cta,
+                 nom_cuenta.get(cta, ''), 0, a['credito'])
+        r += 1
+
+    widths = [8, 12, 30, 14, 16, 10, 30, 14, 14, 8]
+    for j, w in enumerate(widths, 1):
+        ws.column_dimensions[get_column_letter(j)].width = w
+    ws.freeze_panes = 'A2'
+    wb.save(ruta_salida)
+    return ruta_salida
+
+
+def _fila_ce(ws, r, bd, asiento, fecha, tercero, ident, doc, codigo, cuenta, debito, credito):
+    vals = [asiento, fecha, tercero, ident, doc, codigo, cuenta,
+            debito if debito else None, credito if credito else None, '']
+    for j, v in enumerate(vals, 1):
+        cell = ws.cell(r, j, v)
+        cell.font = Font(name='Arial', size=9)
+        cell.border = bd
+        if j in (8, 9):
+            cell.number_format = '#,##0.00'
+            cell.alignment = Alignment(horizontal='right')
+        elif j in (1, 5, 6):
+            cell.alignment = Alignment(horizontal='center')
+        else:
+            cell.alignment = Alignment(horizontal='left', indent=1)
+        if j == 4:
+            cell.number_format = '@'
