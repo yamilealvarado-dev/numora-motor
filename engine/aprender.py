@@ -101,3 +101,21 @@ def cargar_puc(ruta_puc):
     puc = pd.read_excel(ruta_puc, sheet_name='Datos', header=2, dtype=str)
     puc['c'] = puc['Cuenta'].apply(lambda x: re.sub(r'\D', '', str(x)))
     return dict(zip(puc['c'], puc['Nombre']))
+
+
+def cargar_puc_meta(ruta_puc):
+    """Carga metadatos del PUC por cuenta: tipo (S/B/C), base de retención y centro de costo.
+    Sirve para el TXT ContaExport: definir NIT, valor base de retención y centro de costo."""
+    df = pd.read_excel(ruta_puc, sheet_name='Datos', header=2, dtype=str)
+    meta = {}
+    for _, r in df.iterrows():
+        cod = str(r.get('Cuenta', '') or '').replace('-', '').strip()
+        if not cod:
+            continue
+        meta[cod] = {
+            'tipo': str(r.get('Tipo', '') or '').strip().upper(),
+            'baseret': str(r.get('Base Ret.', '') or '').strip(),
+            'ccosto': str(r.get('Ccosto', '') or '').strip().upper(),
+            'nombre': str(r.get('Nombre', '') or '').strip(),
+        }
+    return meta
