@@ -4,10 +4,11 @@ import traceback
 import requests
 from flask import Flask, request, jsonify, send_file, render_template
 from flask_cors import CORS
-from engine.aprender import aprender_perfiles, aprender_iva_pares, cargar_puc
+from engine.aprender import aprender_perfiles, aprender_iva_pares, cargar_puc, cargar_puc_meta
 from engine.xml_parser import leer_zip
 from engine.clasificar import clasificar, clasificar_dian_items, clasificar_solo_xml
-from engine.exportar import generar_excel, generar_txt
+from engine.exportar import generar_excel
+from engine.contaexport import generar_txt
 
 app = Flask(__name__)
 CORS(app)
@@ -82,9 +83,11 @@ def procesar():
         tmp = tempfile.mkdtemp()
         aux_p = os.path.join(tmp, 'aux.xlsx'); aux.save(aux_p)
         puc = {}
+        puc_meta = {}
         if puc_f:
             puc_p = os.path.join(tmp, 'puc.xlsx'); puc_f.save(puc_p)
             puc = cargar_puc(puc_p)
+            puc_meta = cargar_puc_meta(puc_p)
         facturas = {}
         if xmlzip:
             zp = os.path.join(tmp, 'xml.zip'); xmlzip.save(zp)
@@ -99,7 +102,7 @@ def procesar():
             asientos, resumen = clasificar_solo_xml(facturas, perfiles, iva_pares)
 
         token = next(tempfile._get_candidate_names())
-        _cache[token] = {'asientos': asientos, 'resumen': resumen, 'puc': puc}
+        _cache[token] = {'asientos': asientos, 'resumen': resumen, 'puc': puc, 'puc_meta': puc_meta}
 
         meses = {}
         for a in asientos:
@@ -125,6 +128,7 @@ def generar():
         asientos = data.get('asientos', [])
         item = _cache.get(token, {})
         puc = item.get('puc', {})
+        puc_meta = item.get('puc_meta', {})
         for a in asientos:
             a['credito'] = round(sum(l['debito'] for l in a['lineas'] if l.get('cuenta')), 2)
             a['cuadra'] = abs(a['credito'] - a['total']) < 1
@@ -138,7 +142,7 @@ def generar():
             'descuadres': sum(1 for a in asientos if not a.get('cuadra')),
             'sin_cuenta': sum(1 for a in asientos if not any(l.get('cuenta') for l in a['lineas'])),
         }
-        _cache[token] = {'asientos': asientos, 'resumen': resumen, 'puc': puc}
+        _cache[token] = {'asientos': asientos, 'resumen': resumen, 'puc': puc, 'puc_meta': puc_meta}
         return jsonify({'token': token, 'resumen': resumen})
     except Exception as e:
         traceback.print_exc()
@@ -188,6 +192,7 @@ def descargar(kind, token, mes=None):
     if not item:
         return 'No encontrado', 404
     asientos = item['asientos']
+    puc_tipos = {c: m.get('tipo', '') for c, m in item.get('puc_meta', {}).items()}
     if mes:
         asientos = [a for a in asientos if _mes_de(a) == mes]
     sufijo = f'_{MESES.get(mes, mes)}' if mes else ''
@@ -196,13 +201,14 @@ def descargar(kind, token, mes=None):
         generar_excel(asientos, item['resumen'], item['puc'], path,
                       f'Revisión de compras{(" - " + MESES.get(mes, mes)) if mes else ""}')
     elif kind == 'contaexport':
-        from engine.exportar import generar_excel_contaexport
+        from engine.contaexport import generar_excel_contaexport
         path = os.path.join(SALIDA, f'ContaExport{sufijo}_{token}.xlsx')
         generar_excel_contaexport(asientos, item['puc'], path,
-                                  hoja=MESES.get(mes, 'Compras') if mes else 'Compras')
+                                  hoja=MESES.get(mes, 'Datos') if mes else 'Datos',
+                                  puc_tipos=puc_tipos)
     else:
         path = os.path.join(SALIDA, f'Compras{sufijo}_{token}.txt')
-        generar_txt(asientos, path)
+        generar_txt(asientos, path, puc_tipos=puc_tipos)
     return send_file(path, as_attachment=True, download_name=os.path.basename(path))
 
 
