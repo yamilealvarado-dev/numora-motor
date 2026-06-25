@@ -1,4 +1,4 @@
-"""Aprende, por proveedor, en qué cuentas contabiliza las compras (desde el auxiliar del año anterior)."""
+"""Aprende, por proveedor, en qué cuentas contabiliza las compras (desde el auxiliar del año anterior o meses ya contabilizados)."""
 import re
 import pandas as pd
 from collections import defaultdict, Counter
@@ -28,7 +28,7 @@ def _es_retencion(cuenta):
 
 
 def aprender_perfiles(ruta_auxiliar, comprobante_compra='00003'):
-    """Devuelve {nit: {grav_base, iva, nograv, prov, inc, ret, n, nombre}}."""
+    """Devuelve {nit: {grav_base, iva, nograv, prov, inc, ret, cuentas, n, nombre}}."""
     aux = pd.read_excel(ruta_auxiliar, sheet_name='Datos', header=2, dtype=str)
     for c in ['Débitos', 'Créditos']:
         aux[c] = pd.to_numeric(aux[c], errors='coerce').fillna(0)
@@ -76,6 +76,25 @@ def aprender_perfiles(ruta_auxiliar, comprobante_compra='00003'):
                   'cuentas': sorted(set(list(p['grav_base']) + list(p['nograv']))),
                   'n': p['n'], 'nombre': p['nombre']}
             for nit, p in perfil.items()}
+
+
+def aprender_iva_pares(ruta_auxiliar, comprobante_compra='00003'):
+    """Aprende la pareja {cuenta_costo: cuenta_iva} desde el auxiliar:
+    en cada asiento de compra, empareja cada cuenta base con la cuenta de IVA que aparece junto."""
+    aux = pd.read_excel(ruta_auxiliar, sheet_name='Datos', header=2, dtype=str)
+    for c in ['Débitos', 'Créditos']:
+        aux[c] = pd.to_numeric(aux[c], errors='coerce').fillna(0)
+    comp = aux[aux['Comprobante'] == comprobante_compra]
+    pares = defaultdict(Counter)
+    for doc, a in comp.groupby('Documento'):
+        debs = a[a['Débitos'] > 0]
+        iva_l = debs[debs['Nombre Cuenta'].apply(_es_iva)]
+        base_l = debs[~debs.index.isin(iva_l.index)]
+        if len(iva_l) > 0:
+            iva_acct = iva_l.iloc[0]['Cuenta']
+            for _, b in base_l.iterrows():
+                pares[b['Cuenta']][iva_acct] += 1
+    return {c.strip(): cc.most_common(1)[0][0].strip() for c, cc in pares.items()}
 
 
 def cargar_puc(ruta_puc):

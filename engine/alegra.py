@@ -93,6 +93,32 @@ def bill_a_factura(bill):
             "lineas": lineas}
 
 
+def get_bill(bill_id):
+    """Trae el detalle completo de una factura de proveedor (incluye adjuntos con su URL si la hay)."""
+    r = requests.get(BASE + "/bills/" + str(bill_id), headers=_headers(), timeout=40)
+    r.raise_for_status()
+    return r.json()
+
+
+def diagnostico(desde=None, hasta=None):
+    """Revisa si los XML adjuntos se pueden descargar por la API."""
+    bills = get_bills(desde, hasta, max_bills=60)
+    out = {"ok": True, "facturas_encontradas": len(bills)}
+    if bills:
+        out["ejemplo_convertido"] = bill_a_factura(bills[0])
+        con_adj = next((b for b in bills if b.get("attachments")), None)
+        if con_adj:
+            try:
+                detalle = get_bill(con_adj["id"])
+                out["bill_con_adjunto_id"] = con_adj["id"]
+                out["adjuntos_detalle"] = detalle.get("attachments")
+            except Exception as e:
+                out["adjuntos_error"] = str(e)
+        else:
+            out["adjuntos_detalle"] = "ninguna factura de la muestra tiene adjunto"
+    return out
+
+
 def facturas_desde_alegra(fecha_desde=None, fecha_hasta=None):
     """Devuelve {nit_folio: factura} igual que el lector de XML, para que el motor las use igual."""
     facturas = {}

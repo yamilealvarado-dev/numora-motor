@@ -73,7 +73,6 @@ def generar_excel(asientos, resumen, nom_cuenta, ruta_salida, titulo='Revisión 
         ws.column_dimensions[get_column_letter(j)].width = w
     ws.freeze_panes = 'A5'
 
-    # Hoja de asientos (ContaExport)
     ws2 = wb.create_sheet('Asientos')
     h2 = ['Fecha', 'Factura', 'NIT', 'Proveedor', 'Cuenta', 'Nombre cuenta', 'Débito', 'Crédito']
     for j, c in enumerate(h2, 1):
@@ -106,17 +105,17 @@ def generar_excel(asientos, resumen, nom_cuenta, ruta_salida, titulo='Revisión 
 
 
 def generar_txt(asientos, ruta_salida, nro_registro='00003'):
-    """TXT plano de ContaI: 1=débito, 2=crédito. Documento agrupa el asiento.
-    (Formato a confirmar contra una importación real de ContaI.)"""
-    anchos = [20, 5, 10, 9, 9, 11, 28, 1, 21]
+    """TXT plano de ContaI: 1=débito, 2=crédito. Documento agrupa el asiento."""
     lineas = []
     consec = 0
     for a in asientos:
         consec += 1
         doc = f"{consec:09d}"
-        fecha = a['fecha'].replace('/', '/')  # DD/MM/YYYY -> se ajusta abajo
-        d, m, y = a['fecha'].split('/')
-        fecha = f"{m}/{d}/{y}"  # ContaI ingresos/egresos: MM/DD/YYYY
+        try:
+            d, m, y = a['fecha'].split('/')
+            fecha = f"{m}/{d}/{y}"
+        except ValueError:
+            fecha = a['fecha']
         for l in a['lineas']:
             if not l['cuenta']:
                 continue

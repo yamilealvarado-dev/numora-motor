@@ -1,8 +1,6 @@
 """Reglas de palabras clave: rutean cada línea de factura a su cuenta cuando el proveedor es mixto.
 Editable: aquí se agregan los conceptos típicos de cada empresa."""
 
-# Cada regla: (lista de palabras clave en el concepto) -> cuenta destino
-# Se evalúan en orden; la primera que coincida gana.
 REGLAS_DEFECTO = [
     (['GUANTE', 'JABON', 'JABÓN', 'CLORO', 'DETERGENTE', 'ESCOBA', 'TRAPERO', 'BOLSA',
       'SERVILLETA', 'PAPEL HIGIENICO', 'PAPEL HIGIÉNICO', 'LIMPIA', 'DESINFECT',
