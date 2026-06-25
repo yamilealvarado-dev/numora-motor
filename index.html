@@ -1,85 +1,77 @@
-"""Conexión con la API de Alegra: trae las facturas de proveedor (bills) con sus ítems.
-Autenticación Basic (correo + token), guardados como variables de entorno en Render."""
-import os
-import re
-import base64
-import requests
-
-BASE = "https://api.alegra.com/api/v1"
+"""Clasificación ítem por ítem: a cada línea del XML/Alegra le sugiere su cuenta y su cuenta de IVA.
+El usuario revisa y edita en la pantalla; aquí solo se sugiere."""
+from collections import defaultdict
+from engine.reglas import cuenta_por_concepto
 
 
-def _headers():
-    email = os.environ.get("ALEGRA_EMAIL", "")
-    token = os.environ.get("ALEGRA_TOKEN", "")
-    raw = f"{email}:{token}".encode("utf-8")
-    return {"Authorization": "Basic " + base64.b64encode(raw).decode("utf-8"),
-            "Accept": "application/json"}
+def _limpiar(c):
+    return str(c).strip() if c else ''
 
 
-def hay_credenciales():
-    return bool(os.environ.get("ALEGRA_EMAIL") and os.environ.get("ALEGRA_TOKEN"))
+def sugerir_cuenta_item(linea, perfil, reglas=None):
+    """Sugiere la cuenta de un ítem: 1) palabra clave del concepto, 2) cuenta del proveedor."""
+    # 1) por concepto (separa aseo, cafetería, etc. dentro de una factura mixta)
+    c = cuenta_por_concepto(linea.get('concepto', ''), reglas)
+    if c:
+        return _limpiar(c), 'concepto'
+    # 2) por proveedor (la cuenta que más usa ese proveedor)
+    if perfil:
+        if linea.get('iva', 0) > 0 and perfil.get('grav_base'):
+            return _limpiar(perfil['grav_base']), 'proveedor'
+        if perfil.get('nograv'):
+            return _limpiar(perfil['nograv']), 'proveedor'
+        if perfil.get('grav_base'):
+            return _limpiar(perfil['grav_base']), 'proveedor'
+    return '', 'sin_sugerencia'
 
 
-def get_bills(fecha_desde=None, fecha_hasta=None, max_bills=500):
-    """Trae las facturas de proveedor de Alegra (paginado)."""
-    headers = _headers()
-    bills = []
-    start = 0
-    while len(bills) < max_bills:
-        params = {"start": start, "limit": 30, "order_field": "date", "order_direction": "ASC"}
-        if fecha_desde:
-            params["date_afterwards"] = fecha_desde
-        if fecha_hasta:
-            params["date_before"] = fecha_hasta
-        r = requests.get(BASE + "/bills", headers=headers, params=params, timeout=40)
-        r.raise_for_status()
-        page = r.json()
-        if not isinstance(page, list) or not page:
-            break
-        bills.extend(page)
-        if len(page) < 30:
-            break
-        start += 30
-    return bills
+def clasificar_factura(factura, perfil, iva_pares, reglas=None, cuenta_iva_defecto='240820'):
+    """Devuelve la factura con cada ítem clasificado (cuenta + cuenta de IVA sugeridas)
+    y el asiento contable armado (partida doble)."""
+    items = []
+    for ln in factura.get('lineas', []):
+        cuenta, origen = sugerir_cuenta_item(ln, perfil, reglas)
+        iva = ln.get('iva', 0) or 0
+        # cuenta de IVA: la pareja aprendida de esa cuenta; si no hay, descontable por defecto
+        iva_cuenta = iva_pares.get(cuenta, cuenta_iva_defecto) if iva else ''
+        items.append({
+            'concepto': ln.get('concepto', ''),
+            'base': ln.get('base', 0) or 0,
+            'iva': iva,
+            'iva_pct': ln.get('iva_pct', 0),
+            'cuenta': cuenta,
+            'iva_cuenta': iva_cuenta,
+            'origen_sugerencia': origen,
+            'auto': bool(cuenta),
+        })
+    asiento = armar_asiento(items, perfil)
+    return {
+        'nit': factura.get('nit', ''),
+        'folio': factura.get('folio', ''),
+        'prefijo': factura.get('prefijo', ''),
+        'nombre': (perfil or {}).get('nombre', ''),
+        'cxp': _limpiar((perfil or {}).get('prov', '220501')),
+        'items': items,
+        'asiento': asiento,
+        'cuadra': asiento['cuadra'],
+        'sin_cuenta': sum(1 for it in items if not it['cuenta']),
+    }
 
 
-def _num(x):
-    try:
-        return float(x)
-    except (TypeError, ValueError):
-        return 0.0
-
-
-def bill_a_factura(bill):
-    """Convierte una factura de proveedor de Alegra al formato del motor
-    {nit, folio, prefijo, lineas:[{concepto, base, iva_pct, iva}]}."""
-    prov = bill.get("provider") or {}
-    ident = str(prov.get("identification") or "")
-    nit = re.sub(r"\D", "", ident.split("-")[0])
-    nt = bill.get("numberTemplate") or {}
-    folio = str(nt.get("fullNumber") or nt.get("number") or bill.get("id") or "")
-    lineas = []
-    for it in bill.get("items", []) or []:
-        base = _num(it.get("total"))
-        if not base:
-            base = _num(it.get("price")) * _num(it.get("quantity") or 1)
-        iva = 0.0
-        iva_pct = 0.0
-        for t in it.get("tax", []) or []:
-            iva += _num(t.get("amount"))
-            if _num(t.get("percentage")):
-                iva_pct = _num(t.get("percentage"))
-        lineas.append({"concepto": it.get("name") or it.get("description") or "",
-                       "base": base, "iva_pct": iva_pct, "iva": iva})
-    return {"nit": nit, "folio": folio, "prefijo": "", "lineas": lineas}
-
-
-def facturas_desde_alegra(fecha_desde=None, fecha_hasta=None):
-    """Devuelve {nit_folio: factura} igual que el lector de XML, para que el motor las use igual."""
-    facturas = {}
-    for b in get_bills(fecha_desde, fecha_hasta):
-        f = bill_a_factura(b)
-        if f["lineas"]:
-            facturas[f["nit"] + "_" + f["folio"]] = f
-            facturas[f["folio"]] = f
-    return facturas
+def armar_asiento(items, perfil, cxp=None):
+    """Agrupa los ítems en líneas contables: Db por cuenta (base) + Db por cuenta IVA + Cr proveedor."""
+    debitos = defaultdict(float)
+    for it in items:
+        if it['cuenta']:
+            debitos[it['cuenta']] += it['base']
+        if it['iva']:
+            k = it['iva_cuenta'] or it['cuenta']
+            debitos[k] += it['iva']
+    total_deb = sum(debitos.values())
+    cxp = _limpiar(cxp or (perfil or {}).get('prov', '220501'))
+    lineas = [{'cuenta': c, 'debito': round(v, 2), 'credito': 0} for c, v in debitos.items()]
+    lineas.append({'cuenta': cxp, 'debito': 0, 'credito': round(total_deb, 2)})
+    total_cred = total_deb
+    return {'lineas': lineas, 'total_debito': round(total_deb, 2),
+            'total_credito': round(total_cred, 2),
+            'cuadra': abs(total_deb - total_cred) < 1}

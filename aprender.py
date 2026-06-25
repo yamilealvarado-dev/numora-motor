@@ -41,6 +41,14 @@ def leer_factura(path):
         return None
     emisor_nit = inv.find('.//cac:AccountingSupplierParty//cbc:CompanyID', NS)
     folio = inv.find('cbc:ID', NS)
+    fecha = inv.find('cbc:IssueDate', NS)
+    fecha_txt = ''
+    if fecha is not None and fecha.text:
+        try:
+            y, m, d = fecha.text.strip()[:10].split('-')
+            fecha_txt = f"{d}/{m}/{y}"
+        except ValueError:
+            fecha_txt = fecha.text.strip()
     pref = ''
     fid = folio.text if folio is not None else ''
     m = re.match(r'([A-Za-z]+)(\d+)', fid or '')
@@ -58,7 +66,7 @@ def leer_factura(path):
                        'iva_pct': _f(pct.text if pct is not None else 0),
                        'iva': _f(tax.text if tax is not None else 0)})
     return {'nit': re.sub(r'\D', '', emisor_nit.text) if emisor_nit is not None else '',
-            'folio': fid, 'prefijo': pref, 'lineas': lineas}
+            'folio': fid, 'prefijo': pref, 'fecha': fecha_txt, 'lineas': lineas}
 
 
 def leer_zip(ruta_zip):
@@ -66,7 +74,6 @@ def leer_zip(ruta_zip):
     tmp = tempfile.mkdtemp()
     with zipfile.ZipFile(ruta_zip) as z:
         z.extractall(tmp)
-    # descomprimir zips anidados
     for zp in glob.glob(os.path.join(tmp, '**', '*.zip'), recursive=True):
         try:
             with zipfile.ZipFile(zp) as z2:
@@ -78,5 +85,5 @@ def leer_zip(ruta_zip):
         f = leer_factura(xml)
         if f and f['lineas']:
             facturas[f['nit'] + '_' + f['folio']] = f
-            facturas[f['folio']] = f  # también por folio solo
+            facturas[f['folio']] = f
     return facturas
