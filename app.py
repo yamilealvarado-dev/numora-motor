@@ -53,6 +53,20 @@ def alegra_test():
         return jsonify({'ok': False, 'mensaje': 'Error de conexión', 'detalle': str(e)}), 200
 
 
+@app.route('/alegra-xml-test')
+def alegra_xml_test():
+    """Prueba si se puede BAJAR el contenido del XML adjunto de una factura."""
+    from engine import alegra
+    if not alegra.hay_credenciales():
+        return jsonify({'ok': False, 'mensaje': 'Faltan ALEGRA_EMAIL o ALEGRA_TOKEN en Render.'}), 400
+    bill_id = request.args.get('bill', '54')
+    try:
+        return jsonify(alegra.probar_descarga_xml(bill_id))
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({'ok': False, 'mensaje': 'Error', 'detalle': str(e)}), 200
+
+
 @app.route('/procesar', methods=['POST'])
 def procesar():
     try:
@@ -135,16 +149,19 @@ def generar():
 def auditar_endpoint():
     """Cruza el auxiliar contabilizado contra el reporte DIAN."""
     try:
-        from engine.auditar import auditar, generar_excel_auditoria
+        from engine.auditar import auditar, generar_excel_auditoria, meses_disponibles
         aux = request.files.get('auxiliar')
         dian = request.files.get('dian')
         comp = request.form.get('comprobante', '00003')
+        mes = request.form.get('mes') or None  # 'YYYY-MM' o vacío = todos
         if not aux or not dian:
             return jsonify({'error': 'Sube el auxiliar y el reporte DIAN.'}), 400
         tmp = tempfile.mkdtemp()
         aux_p = os.path.join(tmp, 'aux.xlsx'); aux.save(aux_p)
         dian_p = os.path.join(tmp, 'dian.xlsx'); dian.save(dian_p)
-        audit = auditar(aux_p, dian_p, comp)
+        audit = auditar(aux_p, dian_p, comp, mes)
+        audit['meses_disponibles'] = meses_disponibles(dian_p)
+        audit['mes_auditado'] = mes or 'todos'
         token = next(tempfile._get_candidate_names())
         path = os.path.join(SALIDA, f'Auditoria_{token}.xlsx')
         generar_excel_auditoria(audit, path)
@@ -178,6 +195,11 @@ def descargar(kind, token, mes=None):
         path = os.path.join(SALIDA, f'Revision{sufijo}_{token}.xlsx')
         generar_excel(asientos, item['resumen'], item['puc'], path,
                       f'Revisión de compras{(" - " + MESES.get(mes, mes)) if mes else ""}')
+    elif kind == 'contaexport':
+        from engine.exportar import generar_excel_contaexport
+        path = os.path.join(SALIDA, f'ContaExport{sufijo}_{token}.xlsx')
+        generar_excel_contaexport(asientos, item['puc'], path,
+                                  hoja=MESES.get(mes, 'Compras') if mes else 'Compras')
     else:
         path = os.path.join(SALIDA, f'Compras{sufijo}_{token}.txt')
         generar_txt(asientos, path)
