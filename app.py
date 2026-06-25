@@ -4,16 +4,16 @@ import traceback
 import requests
 from flask import Flask, request, jsonify, send_file, render_template
 from flask_cors import CORS
-from engine.aprender import aprender_perfiles, cargar_puc
+from engine.aprender import aprender_perfiles, aprender_iva_pares, cargar_puc
 from engine.xml_parser import leer_zip
-from engine.clasificar import clasificar
+from engine.clasificar import clasificar, clasificar_dian_items, clasificar_solo_xml
 from engine.exportar import generar_excel, generar_txt
 
 app = Flask(__name__)
-CORS(app)  # permite que Lovable (u otro frontend) llame al motor
-app.config['MAX_CONTENT_LENGTH'] = 60 * 1024 * 1024  # 60 MB
+CORS(app)
+app.config['MAX_CONTENT_LENGTH'] = 60 * 1024 * 1024
 SALIDA = tempfile.gettempdir()
-_cache = {}  # token -> {asientos, resumen, puc}
+_cache = {}
 
 MESES = {'01': 'Enero', '02': 'Febrero', '03': 'Marzo', '04': 'Abril', '05': 'Mayo',
          '06': 'Junio', '07': 'Julio', '08': 'Agosto', '09': 'Septiembre',
@@ -38,21 +38,15 @@ def alegra_test():
     from engine import alegra
     if not alegra.hay_credenciales():
         return jsonify({'ok': False, 'mensaje': 'Faltan ALEGRA_EMAIL o ALEGRA_TOKEN en Render.'}), 400
-    desde = request.args.get('desde')  # ej. 2026-01-01
-    hasta = request.args.get('hasta')  # ej. 2026-04-30
+    desde = request.args.get('desde')
+    hasta = request.args.get('hasta')
     try:
-        bills = alegra.get_bills(desde, hasta, max_bills=60)
-        ejemplo_crudo = bills[0] if bills else None
-        ejemplo_convertido = alegra.bill_a_factura(bills[0]) if bills else None
-        return jsonify({'ok': True, 'conexion': 'exitosa',
-                        'facturas_de_proveedor_encontradas': len(bills),
-                        'ejemplo_convertido': ejemplo_convertido,
-                        'ejemplo_crudo': ejemplo_crudo})
+        return jsonify(alegra.diagnostico(desde, hasta))
     except requests.HTTPError as e:
         code = e.response.status_code if e.response is not None else '?'
-        msg = 'Credenciales incorrectas (401)' if code == 401 else (
-              'Tu plan de Alegra no permite API — se requiere plan Plus (403)' if code == 403 else
-              f'Error HTTP {code}')
+        msg = ('Credenciales incorrectas (401)' if code == 401 else
+               'Tu plan de Alegra no permite API — se requiere plan Plus (403)' if code == 403 else
+               f'Error HTTP {code}')
         return jsonify({'ok': False, 'mensaje': msg, 'detalle': str(e)}), 200
     except Exception as e:
         traceback.print_exc()
@@ -66,12 +60,13 @@ def procesar():
         dian = request.files.get('dian')
         xmlzip = request.files.get('xml')
         puc_f = request.files.get('puc')
-        if not aux or not dian:
-            return jsonify({'error': 'Faltan el auxiliar del año anterior y el reporte DIAN.'}), 400
+        if not aux:
+            return jsonify({'error': 'Falta el auxiliar (para aprender las cuentas).'}), 400
+        if not dian and not xmlzip:
+            return jsonify({'error': 'Sube el reporte DIAN o el ZIP de XML (al menos uno).'}), 400
 
         tmp = tempfile.mkdtemp()
         aux_p = os.path.join(tmp, 'aux.xlsx'); aux.save(aux_p)
-        dian_p = os.path.join(tmp, 'dian.xlsx'); dian.save(dian_p)
         puc = {}
         if puc_f:
             puc_p = os.path.join(tmp, 'puc.xlsx'); puc_f.save(puc_p)
@@ -82,17 +77,20 @@ def procesar():
             facturas = leer_zip(zp)
 
         perfiles = aprender_perfiles(aux_p)
-        asientos, resumen = clasificar(dian_p, perfiles, facturas)
+        iva_pares = aprender_iva_pares(aux_p)
+        if dian:
+            dian_p = os.path.join(tmp, 'dian.xlsx'); dian.save(dian_p)
+            asientos, resumen = clasificar_dian_items(dian_p, perfiles, iva_pares, facturas)
+        else:
+            asientos, resumen = clasificar_solo_xml(facturas, perfiles, iva_pares)
 
         token = next(tempfile._get_candidate_names())
         _cache[token] = {'asientos': asientos, 'resumen': resumen, 'puc': puc}
 
-        # resumen por mes para que el frontend muestre las tarjetas de meses
         meses = {}
         for a in asientos:
             m = _mes_de(a)
-            d = meses.setdefault(m, {'mes': m, 'nombre': MESES.get(m, m),
-                                     'facturas': 0, 'total': 0})
+            d = meses.setdefault(m, {'mes': m, 'nombre': MESES.get(m, m), 'facturas': 0, 'total': 0})
             d['facturas'] += 1
             d['total'] += a['total']
         meses = sorted(meses.values(), key=lambda x: x['mes'])
@@ -106,8 +104,7 @@ def procesar():
 
 @app.route('/generar', methods=['POST'])
 def generar():
-    """Recibe los asientos YA EDITADOS por el usuario y genera el archivo final.
-    La partida doble se recalcula con las ediciones."""
+    """Recibe los asientos YA EDITADOS y genera el archivo final."""
     try:
         data = request.get_json(force=True)
         token = data.get('token')
@@ -132,6 +129,39 @@ def generar():
     except Exception as e:
         traceback.print_exc()
         return jsonify({'error': str(e)}), 500
+
+
+@app.route('/auditar', methods=['POST'])
+def auditar_endpoint():
+    """Cruza el auxiliar contabilizado contra el reporte DIAN."""
+    try:
+        from engine.auditar import auditar, generar_excel_auditoria
+        aux = request.files.get('auxiliar')
+        dian = request.files.get('dian')
+        comp = request.form.get('comprobante', '00003')
+        if not aux or not dian:
+            return jsonify({'error': 'Sube el auxiliar y el reporte DIAN.'}), 400
+        tmp = tempfile.mkdtemp()
+        aux_p = os.path.join(tmp, 'aux.xlsx'); aux.save(aux_p)
+        dian_p = os.path.join(tmp, 'dian.xlsx'); dian.save(dian_p)
+        audit = auditar(aux_p, dian_p, comp)
+        token = next(tempfile._get_candidate_names())
+        path = os.path.join(SALIDA, f'Auditoria_{token}.xlsx')
+        generar_excel_auditoria(audit, path)
+        _cache['audit_' + token] = path
+        audit['token'] = token
+        return jsonify(audit)
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/descargar-auditoria/<token>')
+def descargar_auditoria(token):
+    path = _cache.get('audit_' + token)
+    if not path or not os.path.exists(path):
+        return 'No encontrado', 404
+    return send_file(path, as_attachment=True, download_name='Auditoria_compras.xlsx')
 
 
 @app.route('/descargar/<kind>/<token>')
